@@ -1,0 +1,14 @@
+Spoken Phrase (Trigger),Intercept Action / Target Output,Real-Life Scenario / Use Case
+"""scratch that""",Simulate Ctrl + Backspace,Instantly deletes the last typed word if you make a verbal typo.
+"""bot clear"" or ""clear sentence""",Parse buffer backwards to last . or \n; simulate Backspace × N,Deletes the current active sentence to let you restart your thought.
+"""strike line""",Simulate Shift + Home then Backspace,Erases the entire current line of text immediately.
+"""undo last""",Simulate Ctrl + Z,Reverts the last text insertion block or layout change.
+"""select all""",Simulate Ctrl + A,Quickly highlighting everything in the active window for copying or clearing.
+"""save document""",Simulate Ctrl + S,Mid-thought background saving without leaving the flow state.
+open quote,"""",and set a temporary suppress_next_space flag to true so the next spoken word attaches directly to the quote.
+close quote,"""","Look at the buffer. If there is a trailing space from the last spoken word, delete it, then output"
+quote unquote,""" """,Insert the spoken words after this in between the quotes. Wait for a pause to end sentence. 
+"People use the word ""quote"" in natural sentences (e.g., ""Can you give me a quote for the repairs?""). To prevent accidental intercepts, you can implement a brief pause-detection rule:",,
+"If the user says ""quote"" seamlessly in the middle of a rapid sentence, print the literal word: quote.",,
+"If the user pauses briefly (e.g., 300ms delay), says ""quote"", and continues, execute the intercept command: "".",,
+"Alternatively, forcing the user to say ""open quote"" instead of just ""quote"" drastically reduces accidental triggers and is the standard practice in professional dictation software.",,
