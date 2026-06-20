@@ -1,6 +1,8 @@
 # Vocara: Privacy-First Local Dictation
 
-![Vocara Logo](assets/logo_cropped.png)
+<p align="center">
+  <img src="assets/logo_cropped.png" alt="Vocara Logo">
+</p>
 
 Vocara is a blazing-fast, privacy-first local dictation application powered by Whisper. Everything runs entirely on your own hardware, guaranteeing absolute privacy and zero latency from network requests.
 
