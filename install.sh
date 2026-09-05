@@ -36,21 +36,21 @@ python3 -m venv venv
 source venv/bin/activate
 
 # Install base dependencies
-echo "[+] Installing core dependencies (Whisper, PySide6, Audio libs)..."
+echo "[+] Installing core dependencies (faster-whisper, PySide6, Audio libs)..."
 pip install --upgrade pip
-pip install pynput sounddevice "numpy<2" openai-whisper PySide6
+pip install pynput sounddevice "numpy<2" faster-whisper PySide6 pillow pystray
 
-# Install PyTorch mapped to hardware
-echo "[+] Installing hardware-accelerated PyTorch..."
+# Install PyTorch mapped to hardware if needed for openai-whisper
+echo "[+] Checking hardware acceleration..."
 if [ "$GPU_VENDOR" == "AMD" ]; then
     echo "    -> Using AMD ROCm architecture."
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.6
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.6 || true
 elif [ "$GPU_VENDOR" == "NVIDIA" ]; then
     echo "    -> Using NVIDIA CUDA architecture."
-    pip install torch torchvision torchaudio
+    pip install torch torchvision torchaudio || true
 else
     echo "    -> Using CPU architecture."
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu || true
 fi
 
 # Create Desktop Shortcut
@@ -64,7 +64,7 @@ cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Type=Application
 Name=Vocara
-Comment=Voice-to-Text powered by Whisper
+Comment=Privacy-First Local Voice-to-Text powered by Whisper
 Exec=$CURRENT_DIR/venv/bin/python3 $CURRENT_DIR/main.py
 Terminal=false
 Categories=Utility;
@@ -75,5 +75,5 @@ echo "[+] Shortcut created at $DESKTOP_FILE"
 
 echo "======================================"
 echo "[+] Installation Complete!"
-echo "    You can now launch 'Vocara AI Dictation' from your application menu."
+echo "    You can now launch 'Vocara' from your application menu."
 echo "======================================"

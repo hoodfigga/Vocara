@@ -6,15 +6,23 @@ from pynput.keyboard import Key, Controller
 logger = logging.getLogger(__name__)
 
 class NLPProcessor:
-    def __init__(self, simulator):
+    def __init__(self, simulator, command_callback=None):
         self.simulator = simulator
         self.keyboard = simulator.keyboard
+        self.command_callback = command_callback
         self.suppress_leading_space = False
         self.is_first_word = True
         self.is_paused = False
 
+    def _notify_command(self, name):
+        if self.command_callback:
+            try:
+                self.command_callback(name)
+            except Exception:
+                pass
+
     def simulate_hotkey(self, modifier, key, secondary_key=None):
-        time.sleep(0.05)
+        time.sleep(0.04)
         self.keyboard.press(modifier)
         if secondary_key:
             self.keyboard.press(secondary_key)
@@ -24,7 +32,7 @@ class NLPProcessor:
         if secondary_key:
             self.keyboard.release(secondary_key)
         self.keyboard.release(modifier)
-        time.sleep(0.05)
+        time.sleep(0.04)
 
     def process(self, text):
         if not text:
@@ -36,12 +44,14 @@ class NLPProcessor:
         if re.match(r'(?i)^(vocara|vokara|bokara|bakara)\s+pause$', cleaned) or cleaned == "pause dictation":
             logger.info("NLP: Executing 'vocara pause'")
             self.is_paused = True
+            self._notify_command("Vocara Paused")
             return
 
         if re.match(r'(?i)^(vocara|vokara|bokara|bakara)\s+resume$', cleaned) or cleaned == "resume dictation":
             logger.info("NLP: Executing 'vocara resume'")
             self.is_paused = False
             self.is_first_word = True
+            self._notify_command("Vocara Resumed")
             return
             
         if self.is_paused:
@@ -53,6 +63,7 @@ class NLPProcessor:
             logger.info("NLP: Executing 'scratch that'")
             self.simulate_hotkey(Key.ctrl, Key.backspace)
             self.suppress_leading_space = True 
+            self._notify_command("Scratch That (Delete Word)")
             return
             
         if cleaned == "strike line":
@@ -61,21 +72,25 @@ class NLPProcessor:
             self.keyboard.press(Key.backspace)
             self.keyboard.release(Key.backspace)
             self.is_first_word = True
+            self._notify_command("Strike Line (Clear Line)")
             return
             
         if cleaned == "undo last":
             logger.info("NLP: Executing 'undo last'")
             self.simulate_hotkey(Key.ctrl, 'z')
+            self._notify_command("Undo Last")
             return
             
         if cleaned == "select all":
             logger.info("NLP: Executing 'select all'")
             self.simulate_hotkey(Key.ctrl, 'a')
+            self._notify_command("Select All")
             return
             
         if cleaned == "save document":
             logger.info("NLP: Executing 'save document'")
             self.simulate_hotkey(Key.ctrl, 's')
+            self._notify_command("Save Document")
             return
             
         if re.match(r'(?i)^(vocara|vokara|bokara|bakara)\s+(clear|clean)$', cleaned) or cleaned == "clear sentence":
@@ -83,16 +98,13 @@ class NLPProcessor:
             for _ in range(15):
                 self.simulate_hotkey(Key.ctrl, Key.backspace)
             self.is_first_word = True
+            self._notify_command("Vocara Clear")
             return
 
         # --- Inline Smart Punctuation & Spacing ---
-        
         text = re.sub(r'(?i)\bopen (quote|code)[.!?,\s]*', '"', text)
-        
         text = re.sub(r'(?i)\bopen bracket[.!?,\s]*', '(', text)
-        
         text = re.sub(r'(?i)[\s]*\bclose (quote|code)\b[.!?,\s]*', '" ', text)
-        
         text = re.sub(r'(?i)[\s]*\bclose bracket\b[.!?,\s]*', ') ', text)
         
         match = re.search(r'(?i)\b(quote|quot|code|court)[,.\s]+(unquote|un-quote|on quote|and quote|and quot|on code|and code|un-gote|uncord)\b[.!?,\s]*', text)
@@ -122,11 +134,9 @@ class NLPProcessor:
 
         # --- Standard Text Typing ---
         prefix = "" if self.is_first_word or self.suppress_leading_space else " "
-        
         if re.match(r'^[.,!?;:]', text):
             prefix = ""
             
         self.simulator.type_text(prefix + text)
-        
         self.suppress_leading_space = False
         self.is_first_word = False
