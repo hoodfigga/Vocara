@@ -1,24 +1,33 @@
 import logging
-from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-    QLineEdit, QPushButton, QListWidget, QListWidgetItem,
-    QFrame, QMessageBox, QWidget
-)
+
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+)
+
 from config import load_dictionary, save_dictionary
 
 logger = logging.getLogger(__name__)
+
 
 class DictionaryDialog(QDialog):
     def __init__(self, parent=None, on_dict_updated_cb=None):
         super().__init__(parent)
         self.on_dict_updated_cb = on_dict_updated_cb
         self.words = load_dictionary()
-        
+
         self.setWindowTitle("Personal Vocabulary & Jargon")
         self.setFixedSize(480, 520)
         self.setModal(True)
-        
+
         self.setStyleSheet("""
             QDialog {
                 background-color: #121316;
@@ -117,8 +126,8 @@ class DictionaryDialog(QDialog):
         title = QLabel("Personal Vocabulary & Jargon", self)
         title.setObjectName("titleLabel")
         desc = QLabel(
-            "Add domain-specific jargon, acronyms, or unique names. Vocara dynamically injects these into Whisper's prompt to dramatically boost recognition accuracy.", 
-            self
+            "Add domain-specific jargon, acronyms, or unique names. Vocara dynamically injects these into Whisper's prompt to dramatically boost recognition accuracy.",
+            self,
         )
         desc.setObjectName("descLabel")
         desc.setWordWrap(True)
@@ -154,7 +163,7 @@ class DictionaryDialog(QDialog):
 
         # Bottom actions
         bottom_box = QHBoxLayout()
-        
+
         self.count_label = QLabel(f"{len(self.words)} terms registered", self)
         bottom_box.addWidget(self.count_label)
         bottom_box.addStretch()
@@ -196,7 +205,7 @@ class DictionaryDialog(QDialog):
         raw = self.input_field.text().strip()
         if not raw:
             return
-        
+
         # Support comma separated additions
         new_terms = [w.strip() for w in raw.split(",") if w.strip()]
         added = False
@@ -229,10 +238,10 @@ class DictionaryDialog(QDialog):
         if not self.words:
             return
         reply = QMessageBox.question(
-            self, 
-            "Clear Vocabulary", 
+            self,
+            "Clear Vocabulary",
             "Are you sure you want to remove all vocabulary terms?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
             self.words = []

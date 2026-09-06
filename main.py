@@ -1,75 +1,100 @@
-import sys
-import os
-import time
-import json
 import logging
+import os
 import platform
+import shutil
+import sys
+import time
+
 import numpy as np
 
 if platform.system() == "Linux":
-    os.environ["HSA_OVERRIDE_GFX_VERSION"] = "10.3.0"
+    # Workaround for AMD GPUs unsupported by stock PyTorch builds (used only by
+    # the optional openai-whisper fallback engine; CTranslate2 itself is CPU/CUDA).
+    os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("Vocara")
 
-from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QSystemTrayIcon, QMenu, QDialog, QMessageBox,
-    QSizePolicy, QProgressBar, QFrame, QToolTip
-)
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPoint, QMetaObject, Slot, QRectF
-from PySide6.QtGui import QIcon, QAction, QColor, QPainter, QPainterPath, QLinearGradient, QFont, QPen, QClipboard
-from PySide6.QtNetwork import QLocalSocket, QLocalServer
-
 from pynput import keyboard
+from PySide6.QtCore import QMetaObject, QRectF, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QIcon, QLinearGradient, QPainter, QPen
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPushButton,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+)
 
-from config import load_config, save_config, update_autostart, load_dictionary
-from transcriber import WhisperTranscriber
 from audio_handler import AudioRecorder, VADThread
-from type_simulator import TypeSimulator
-from nlp_processor import NLPProcessor
-from shortcut_manager import ShortcutManager, get_friendly_name
-from settings_dialog import SettingsDialog
+from config import load_config, save_config, update_autostart
 from dictionary_dialog import DictionaryDialog
+from nlp_processor import NLPProcessor
+from settings_dialog import SettingsDialog
+from shortcut_manager import ShortcutManager, get_friendly_name
+from transcriber import WhisperTranscriber
+from type_simulator import TypeSimulator
+from version import __version__
+
+# xprop is only needed for fullscreen detection on X11; probe once at startup
+# instead of spawning a doomed subprocess every polling tick.
+_HAS_XPROP = (platform.system() != "Linux") or (shutil.which("xprop") is not None)
+if platform.system() == "Linux" and not _HAS_XPROP:
+    logger.warning("xprop not found: fullscreen auto-suspension is disabled.")
+
 
 def is_fullscreen():
     """Checks whether the currently active window is in fullscreen mode."""
     if platform.system() == "Windows":
         try:
             import ctypes
+
             user32 = ctypes.windll.user32
             hwnd = user32.GetForegroundWindow()
-            if not hwnd: return False
+            if not hwnd:
+                return False
             screen_width = user32.GetSystemMetrics(0)
             screen_height = user32.GetSystemMetrics(1)
             import ctypes.wintypes
+
             rect = ctypes.wintypes.RECT()
             user32.GetWindowRect(hwnd, ctypes.byref(rect))
             w = rect.right - rect.left
             h = rect.bottom - rect.top
-            return (w >= screen_width and h >= screen_height)
+            return w >= screen_width and h >= screen_height
         except Exception:
             return False
     elif platform.system() == "Linux":
+        if not _HAS_XPROP:
+            return False
         try:
             import subprocess
-            out = subprocess.check_output(["xprop", "-root", "_NET_ACTIVE_WINDOW"], stderr=subprocess.DEVNULL).decode()
+
+            out = subprocess.check_output(
+                ["xprop", "-root", "_NET_ACTIVE_WINDOW"], stderr=subprocess.DEVNULL, timeout=1.5
+            ).decode()
             active_win_id = out.split("#")[1].strip()
-            if active_win_id == "0x0": return False
-            win_props = subprocess.check_output(["xprop", "-id", active_win_id, "_NET_WM_STATE"], stderr=subprocess.DEVNULL).decode()
+            if active_win_id == "0x0":
+                return False
+            win_props = subprocess.check_output(
+                ["xprop", "-id", active_win_id, "_NET_WM_STATE"], stderr=subprocess.DEVNULL, timeout=1.5
+            ).decode()
             return "_NET_WM_STATE_FULLSCREEN" in win_props
         except Exception:
             return False
     return False
 
+
 def create_app_icon():
     """Generates a crisp, modern vector-based microphone icon for tray and window."""
     size = 64
-    pixmap = QIcon()
     from PySide6.QtGui import QPixmap
+
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     painter = QPainter(pm)
@@ -93,8 +118,10 @@ def create_app_icon():
 
     return QIcon(pm)
 
+
 class AudioVUBar(QWidget):
     """Refined, responsive horizontal audio level meter."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.level = 0.0
@@ -142,21 +169,24 @@ class AudioVUBar(QWidget):
             painter.setBrush(gradient)
             painter.drawRoundedRect(fill_rect, 3, 3)
 
+
 class ProcessingThread(QThread):
-    finished = Signal(str)
-    
+    # NOTE: deliberately NOT named 'finished' — that would shadow QThread.finished.
+    result_ready = Signal(str)
+
     def __init__(self, transcriber, audio_array):
         super().__init__()
         self.transcriber = transcriber
         self.audio_array = audio_array
-        
+
     def run(self):
         try:
             text = self.transcriber.transcribe(self.audio_array)
         except Exception as e:
             logger.error(f"Processing thread error: {e}")
             text = ""
-        self.finished.emit(text)
+        self.result_ready.emit(text)
+
 
 class ModelLoaderThread(QThread):
     loaded = Signal(object)
@@ -174,12 +204,13 @@ class ModelLoaderThread(QThread):
                 device=self.config.get("device", "auto"),
                 compute_type=self.config.get("compute_type", "auto"),
                 vad_filter=self.config.get("vad_filter", True),
-                language=self.config.get("language")
+                language=self.config.get("language"),
             )
             self.loaded.emit(transcriber)
         except Exception as e:
             logger.error(f"Failed to load Whisper model: {e}")
             self.failed.emit(str(e))
+
 
 class VocaraHUD(QWidget):
     """
@@ -187,7 +218,11 @@ class VocaraHUD(QWidget):
     Designed with high-density information architecture, subtle borders,
     clear state communication, live audio metering, and quick controls.
     """
+
     audio_level_signal = Signal(float)
+
+    # Max number of pending always-on phrases before the oldest is dropped
+    MAX_VAD_QUEUE = 5
 
     def __init__(self):
         super().__init__()
@@ -208,6 +243,8 @@ class VocaraHUD(QWidget):
         self.is_processing_vad = False
         self.vad_thread = None
         self.last_transcript = ""
+        self._threads = set()
+        self._model_load_token = 0
 
         self.audio_level_signal.connect(self._on_audio_level)
 
@@ -215,7 +252,7 @@ class VocaraHUD(QWidget):
         self.nlp_engine = NLPProcessor(self.simulator, command_callback=self.on_nlp_command)
         self.recorder = AudioRecorder(
             device_index=self.config.get("input_device"),
-            level_callback=lambda lvl: self.audio_level_signal.emit(lvl)
+            level_callback=lambda lvl: self.audio_level_signal.emit(lvl),
         )
 
         self._build_ui()
@@ -231,16 +268,14 @@ class VocaraHUD(QWidget):
         self.fullscreen_timer.start(2000)
 
         # Global Ghost Mode listener (<ctrl>+<alt>+v)
-        self.ghost_listener = keyboard.GlobalHotKeys({
-            '<ctrl>+<alt>+v': self.toggle_visibility
-        })
+        self.ghost_listener = keyboard.GlobalHotKeys({"<ctrl>+<alt>+v": self.toggle_visibility})
         self.ghost_listener.start()
 
         # Shortcut manager for Push-to-Talk or Toggle
         self.shortcut_manager = ShortcutManager(
             self.config.get("shortcut", []),
             self._handle_ptt,
-            is_toggle_mode=(self.config.get("activation_mode") == "toggle")
+            is_toggle_mode=(self.config.get("activation_mode") == "toggle"),
         )
         self.shortcut_manager.start()
 
@@ -265,6 +300,7 @@ class VocaraHUD(QWidget):
         # Vocara brand mark
         brand_label = QLabel("Vocara", self.container)
         brand_label.setObjectName("brandLabel")
+        brand_label.setToolTip(f"Vocara v{__version__}")
         top_bar.addWidget(brand_label)
 
         # Engine & Model Pill Badge
@@ -319,7 +355,9 @@ class VocaraHUD(QWidget):
         transcript_layout.setContentsMargins(10, 6, 8, 6)
         transcript_layout.setSpacing(8)
 
-        self.transcript_label = QLabel("Ready for speech. Transcribed text will appear here.", self.transcript_frame)
+        self.transcript_label = QLabel(
+            "Ready for speech. Transcribed text will appear here.", self.transcript_frame
+        )
         self.transcript_label.setObjectName("transcriptLabel")
         self.transcript_label.setWordWrap(True)
         transcript_layout.addWidget(self.transcript_label, 1)
@@ -439,12 +477,12 @@ class VocaraHUD(QWidget):
                 border-color: #27272a;
                 background-color: #18191e;
             }
-            QPushButton#actionBtn.recording {
+            QPushButton#actionBtn[recording="true"] {
                 background-color: #dc2626;
                 border: 1px solid #ef4444;
                 color: #ffffff;
             }
-            QPushButton#actionBtn.recording:hover {
+            QPushButton#actionBtn[recording="true"]:hover {
                 background-color: #b91c1c;
             }
             QFrame#transcriptFrame {
@@ -501,12 +539,14 @@ class VocaraHUD(QWidget):
 
     def _restore_position(self):
         pos = self.config.get("hud_position")
+        screen = QApplication.primaryScreen().availableGeometry()
         if pos and isinstance(pos, list) and len(pos) == 2:
-            self.move(pos[0], pos[1])
+            x = max(screen.left(), min(pos[0], screen.right() - self.width() + 1))
+            y = max(screen.top(), min(pos[1], screen.bottom() - self.height() + 1))
+            self.move(x, y)
         else:
             # Default to bottom right corner
-            screen = QApplication.primaryScreen().geometry()
-            self.move(screen.width() - self.width() - 30, screen.height() - 260)
+            self.move(screen.right() - self.width() - 30, screen.bottom() - 260)
 
     def _save_position(self):
         self.config["hud_position"] = [self.x(), self.y()]
@@ -527,16 +567,27 @@ class VocaraHUD(QWidget):
         self.action_btn.setText("Loading Model...")
         self.action_btn.setEnabled(False)
 
+        # Invalidate any in-flight load so a slow older reload cannot overwrite
+        # the result of a newer one.
+        self._model_load_token += 1
+        token = self._model_load_token
+
         self.loader_thread = ModelLoaderThread(self.config)
-        self.loader_thread.loaded.connect(self.on_model_loaded)
-        self.loader_thread.failed.connect(self.on_model_failed)
+        self._threads.add(self.loader_thread)
+        self.loader_thread.loaded.connect(
+            lambda tr, t=token: self.on_model_loaded(tr) if t == self._model_load_token else None
+        )
+        self.loader_thread.failed.connect(
+            lambda msg, t=token: self.on_model_failed(msg) if t == self._model_load_token else None
+        )
+        self.loader_thread.finished.connect(lambda t=self.loader_thread: self._threads.discard(t))
         self.loader_thread.start()
 
     def on_model_loaded(self, transcriber):
         self.transcriber = transcriber
-        engine_name = getattr(transcriber, 'actual_engine', self.config.get('engine', 'faster-whisper'))
-        device_name = getattr(transcriber, 'actual_device', 'cpu')
-        model_name = getattr(transcriber, 'model_size', self.config.get('model_size', 'base'))
+        engine_name = getattr(transcriber, "actual_engine", self.config.get("engine", "faster-whisper"))
+        device_name = getattr(transcriber, "actual_device", "cpu")
+        model_name = getattr(transcriber, "model_size", self.config.get("model_size", "base"))
 
         self.model_badge.setText(f"{engine_name} • {model_name} ({device_name})")
         self.status_dot.setStyleSheet("color: #10b981;")
@@ -559,27 +610,32 @@ class VocaraHUD(QWidget):
         if self.is_manually_paused:
             self.action_btn.setText("Dictation Paused")
             self.action_btn.setEnabled(False)
-            self.action_btn.setProperty("class", "")
-            self.action_btn.setStyle(self.action_btn.style())
+            self._set_recording_style(False)
             return
 
         mode = self.config.get("activation_mode", "hold")
         if mode == "always_on":
             self.action_btn.setText("Always-On Listening")
             self.action_btn.setEnabled(False)
-            self.action_btn.setProperty("class", "")
+            self._set_recording_style(False)
         elif self.is_recording:
             self.action_btn.setText("■ Stop & Transcribe")
             self.action_btn.setEnabled(True)
-            self.action_btn.setProperty("class", "recording")
+            self._set_recording_style(True)
         else:
             action_verb = "Press" if mode == "toggle" else "Hold"
             key_name = get_friendly_name(self.config.get("shortcut", []))
             self.action_btn.setText(f"{action_verb} {key_name} to Dictate")
             self.action_btn.setEnabled(True)
-            self.action_btn.setProperty("class", "")
+            self._set_recording_style(False)
 
-        self.action_btn.setStyle(self.action_btn.style())
+    def _set_recording_style(self, active: bool):
+        """Toggles the dynamic 'recording' property and forces a style refresh.
+        Qt stylesheets match dynamic properties via [recording="true"], not
+        CSS-style .class selectors."""
+        self.action_btn.setProperty("recording", "true" if active else "false")
+        self.action_btn.style().unpolish(self.action_btn)
+        self.action_btn.style().polish(self.action_btn)
 
     @Slot(float)
     def _on_audio_level(self, level: float):
@@ -614,12 +670,26 @@ class VocaraHUD(QWidget):
             self.stop_dictation()
 
     def _handle_ptt(self, is_active):
-        if getattr(self, 'is_manually_paused', False):
+        """Called from the pynput listener thread. Marshals the actual work onto
+        the Qt main thread via QMetaObject.invokeMethod."""
+        if getattr(self, "is_manually_paused", False):
+            return
+        if self.config.get("activation_mode") == "toggle":
+            # Toggle mode fires once per press; the HUD owns the on/off state.
+            if is_active:
+                QMetaObject.invokeMethod(self, "toggle_dictation", Qt.QueuedConnection)
             return
         if is_active:
             QMetaObject.invokeMethod(self, "start_dictation", Qt.QueuedConnection)
         else:
             QMetaObject.invokeMethod(self, "stop_dictation", Qt.QueuedConnection)
+
+    @Slot()
+    def toggle_dictation(self):
+        if self.is_recording:
+            self.stop_dictation()
+        else:
+            self.start_dictation()
 
     @Slot()
     def start_dictation(self):
@@ -648,9 +718,16 @@ class VocaraHUD(QWidget):
             self.recorder.play_cue("stop")
         audio_array = self.recorder.stop_recording()
 
-        self.processing_thread = ProcessingThread(self.transcriber, audio_array)
-        self.processing_thread.finished.connect(self._on_processing_complete)
-        self.processing_thread.start()
+        self._start_processing(audio_array)
+
+    def _start_processing(self, audio_array):
+        """Runs transcription on a worker thread, keeping a strong reference so
+        the QThread is not garbage-collected mid-run."""
+        thread = ProcessingThread(self.transcriber, audio_array)
+        self._threads.add(thread)
+        thread.result_ready.connect(self._on_processing_complete)
+        thread.finished.connect(lambda t=thread: self._threads.discard(t))
+        thread.start()
 
     def _on_processing_complete(self, text):
         self.status_dot.setStyleSheet("color: #10b981;")
@@ -667,6 +744,7 @@ class VocaraHUD(QWidget):
                 if self.config.get("auto_enter", False) and not self.nlp_engine.is_paused:
                     time.sleep(0.04)
                     from pynput.keyboard import Key
+
                     self.simulator.keyboard.press(Key.enter)
                     self.simulator.keyboard.release(Key.enter)
                     self.nlp_engine.is_first_word = True
@@ -696,33 +774,42 @@ class VocaraHUD(QWidget):
         self._update_action_button()
 
     def _manage_vad_thread(self):
-        if getattr(self, 'is_manually_paused', False):
+        if getattr(self, "is_manually_paused", False):
             if self.vad_thread and self.vad_thread.isRunning():
                 self.vad_thread.stop()
                 self.vad_thread = None
-            if getattr(self, 'shortcut_manager', None):
+            if getattr(self, "shortcut_manager", None):
                 self.shortcut_manager.stop()
             return
 
         if self.config.get("activation_mode") == "always_on" and not self.is_suspended:
             if not self.vad_thread or not self.vad_thread.isRunning():
-                self.vad_thread = VADThread(device_index=self.config.get("input_device"))
+                self.vad_thread = VADThread(
+                    device_index=self.config.get("input_device"),
+                    energy_threshold=self.config.get("vad_energy_threshold", 0.015),
+                    silence_timeout=self.config.get("vad_silence_timeout", 2.0),
+                )
                 self.vad_thread.phrase_detected.connect(self.on_vad_phrase)
                 self.vad_thread.level_updated.connect(self._on_audio_level)
                 self.vad_thread.start()
-                if getattr(self, 'shortcut_manager', None):
+                if getattr(self, "shortcut_manager", None):
                     self.shortcut_manager.stop()
         else:
             if self.vad_thread and self.vad_thread.isRunning():
                 self.vad_thread.stop()
                 self.vad_thread = None
-            if getattr(self, 'shortcut_manager', None):
+            if getattr(self, "shortcut_manager", None):
                 self.shortcut_manager.start()
 
     @Slot(np.ndarray)
     def on_vad_phrase(self, audio_array):
         if not self.transcriber or self.nlp_engine.is_paused or self.is_manually_paused:
             return
+        # Bound the backlog: if transcription cannot keep up, drop the oldest
+        # phrases rather than growing the queue without limit.
+        if len(self.vad_queue) >= self.MAX_VAD_QUEUE:
+            logger.warning("VAD backlog full; dropping oldest phrase.")
+            self.vad_queue.pop(0)
         self.vad_queue.append(audio_array)
         self._process_next_vad()
 
@@ -735,9 +822,7 @@ class VocaraHUD(QWidget):
         self.status_dot.setStyleSheet("color: #f59e0b;")
         self.status_text.setText("Transcribing speech...")
 
-        self.processing_thread = ProcessingThread(self.transcriber, audio_array)
-        self.processing_thread.finished.connect(self._on_processing_complete)
-        self.processing_thread.start()
+        self._start_processing(audio_array)
 
     @Slot()
     def _check_fullscreen_status(self):
@@ -757,7 +842,7 @@ class VocaraHUD(QWidget):
             self._manage_vad_thread()
             self.status_dot.setStyleSheet("color: #10b981;")
             self.status_text.setText("Ready")
-            if getattr(self, 'was_visible_before_suspend', False):
+            if getattr(self, "was_visible_before_suspend", False):
                 self.show()
                 self.was_visible_before_suspend = False
 
@@ -786,30 +871,43 @@ class VocaraHUD(QWidget):
         old_compute = self.config.get("compute_type")
         old_device = self.config.get("device")
         old_input = self.config.get("input_device")
+        old_vad_energy = self.config.get("vad_energy_threshold")
+        old_vad_timeout = self.config.get("vad_silence_timeout")
 
         self.config = new_config
         self.recorder.set_device(self.config.get("input_device"))
 
         self.shortcut_manager.update_config(
-            self.config.get("shortcut", []),
-            (self.config.get("activation_mode") == "toggle")
+            self.config.get("shortcut", []), (self.config.get("activation_mode") == "toggle")
         )
         self._update_shortcut_badge()
         update_autostart(self.config.get("start_on_boot", False))
 
         # Check if engine parameters changed and reload model if necessary
         model_changed = (
-            old_engine != self.config.get("engine") or
-            old_model != self.config.get("model_size") or
-            old_compute != self.config.get("compute_type") or
-            old_device != self.config.get("device")
+            old_engine != self.config.get("engine")
+            or old_model != self.config.get("model_size")
+            or old_compute != self.config.get("compute_type")
+            or old_device != self.config.get("device")
         )
 
         if model_changed:
             self.load_engine_model()
-        else:
-            self._manage_vad_thread()
-            self._update_action_button()
+            return
+
+        # Always-On tuning or input device changed while the VAD thread is
+        # running: restart it so the new settings take effect.
+        vad_settings_changed = (
+            old_input != self.config.get("input_device")
+            or old_vad_energy != self.config.get("vad_energy_threshold")
+            or old_vad_timeout != self.config.get("vad_silence_timeout")
+        )
+        if vad_settings_changed and self.vad_thread and self.vad_thread.isRunning():
+            self.vad_thread.stop()
+            self.vad_thread = None
+
+        self._manage_vad_thread()
+        self._update_action_button()
 
     def setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -886,7 +984,20 @@ class VocaraHUD(QWidget):
             self.old_pos = None
             self._save_position()
 
-if __name__ == '__main__':
+    def cleanup(self):
+        """Stops background listeners and worker threads on shutdown."""
+        for attr in ("shortcut_manager", "ghost_listener"):
+            obj = getattr(self, attr, None)
+            if obj is not None:
+                try:
+                    obj.stop()
+                except Exception as e:
+                    logger.debug(f"Error stopping {attr}: {e}")
+        if self.vad_thread and self.vad_thread.isRunning():
+            self.vad_thread.stop()
+
+
+if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setWindowIcon(create_app_icon())
 
@@ -905,6 +1016,7 @@ if __name__ == '__main__':
 
     window = VocaraHUD()
     update_autostart(window.config.get("start_on_boot", False))
+    app.aboutToQuit.connect(window.cleanup)
 
     if window.config.get("start_invisible", False):
         window.hide()

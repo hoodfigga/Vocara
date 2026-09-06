@@ -1,0 +1,26 @@
+[project]
+name = "vocara"
+version = "1.1.0"
+description = "Privacy-first local voice dictation powered by Whisper"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",  # line length handled by formatter
+    "SIM105",  # try/except/pass is clearer as a callback guard than suppress()
+]
+
+[tool.ruff.lint.per-file-ignores]
+# main.py must set the AMD HSA override before importing Qt/torch, which puts
+# its module-level imports after an executable statement.
+"main.py" = ["E402"]

@@ -1,5 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
+"""PyInstaller spec for a one-file Vocara build.
 
+Note: assets/icon.ico is used rather than the PNG so PyInstaller does not need
+Pillow to convert the image at build time.
+"""
+
+import sys
 
 a = Analysis(
     ['main.py'],
@@ -10,7 +16,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['tkinter'],
     noarchive=False,
     optimize=0,
 )
@@ -35,5 +41,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets/icon.png'],
+    icon=['assets/icon.ico' if sys.platform == 'win32' else 'assets/icon.png'],
 )

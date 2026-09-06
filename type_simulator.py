@@ -1,9 +1,10 @@
-import time
 import logging
-import platform
+import time
+
 from pynput.keyboard import Controller, Key
 
 logger = logging.getLogger(__name__)
+
 
 class TypeSimulator:
     def __init__(self):
@@ -28,17 +29,18 @@ class TypeSimulator:
             try:
                 # Fallback for complex Unicode or Windows SendInput limitations
                 from PySide6.QtWidgets import QApplication
+
                 clipboard = QApplication.clipboard()
                 orig_clip = clipboard.text()
                 clipboard.setText(text)
-                
+
                 # Send Ctrl+V
                 ctrl_key = Key.ctrl
                 self.keyboard.press(ctrl_key)
-                self.keyboard.press('v')
-                self.keyboard.release('v')
+                self.keyboard.press("v")
+                self.keyboard.release("v")
                 self.keyboard.release(ctrl_key)
-                
+
                 # Restore clipboard after brief delay
                 time.sleep(0.08)
                 if orig_clip:

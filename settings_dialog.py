@@ -1,15 +1,28 @@
 import logging
-from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-    QComboBox, QPushButton, QCheckBox, QTabWidget,
-    QWidget, QFormLayout, QTableWidget, QTableWidgetItem,
-    QHeaderView, QFrame
-)
+
 from PySide6.QtCore import Qt, Signal
-from config import save_config, get_audio_input_devices
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFormLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from config import get_audio_input_devices, save_config
 from shortcut_manager import RebindListener, get_friendly_name
 
 logger = logging.getLogger(__name__)
+
 
 class SettingsDialog(QDialog):
     shortcut_captured_signal = Signal(list)
@@ -88,6 +101,25 @@ class SettingsDialog(QDialog):
                 selection-background-color: #312e81;
                 selection-color: #ffffff;
                 padding: 4px;
+            }
+            QDoubleSpinBox {
+                background-color: #1c1d22;
+                border: 1px solid #2e3038;
+                border-radius: 6px;
+                padding: 6px 8px;
+                color: #f4f4f5;
+                min-height: 24px;
+            }
+            QDoubleSpinBox:hover {
+                border-color: #3f3f46;
+            }
+            QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+                background-color: #27272a;
+                border: none;
+                width: 16px;
+            }
+            QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
+                background-color: #3f3f46;
             }
             QCheckBox {
                 color: #e4e4e7;
@@ -287,7 +319,9 @@ class SettingsDialog(QDialog):
         self.chk_vad_filter.setChecked(self.config.get("vad_filter", True))
         layout.addWidget(self.chk_vad_filter)
 
-        info_lbl = QLabel("Note: Changing the model or engine will trigger an automatic reload in the background.", self)
+        info_lbl = QLabel(
+            "Note: Changing the model or engine will trigger an automatic reload in the background.", self
+        )
         info_lbl.setStyleSheet("color: #71717a; font-size: 11px; margin-top: 8px;")
         info_lbl.setWordWrap(True)
         layout.addWidget(info_lbl)
@@ -306,11 +340,38 @@ class SettingsDialog(QDialog):
         self.audio_combo = QComboBox()
         self.refresh_audio_devices()
         form.addRow("Input Microphone:", self.audio_combo)
+
+        # --- Always-On (VAD) tuning ---
+        self.vad_threshold_spin = QDoubleSpinBox()
+        self.vad_threshold_spin.setRange(0.001, 0.5)
+        self.vad_threshold_spin.setSingleStep(0.005)
+        self.vad_threshold_spin.setDecimals(3)
+        self.vad_threshold_spin.setValue(float(self.config.get("vad_energy_threshold", 0.015)))
+        self.vad_threshold_spin.setToolTip(
+            "RMS loudness above which audio counts as speech in Always-On mode.\n"
+            "Raise it in noisy rooms, lower it if quiet speech is missed."
+        )
+        form.addRow("Speech Threshold:", self.vad_threshold_spin)
+
+        self.vad_timeout_spin = QDoubleSpinBox()
+        self.vad_timeout_spin.setRange(0.3, 10.0)
+        self.vad_timeout_spin.setSingleStep(0.1)
+        self.vad_timeout_spin.setDecimals(1)
+        self.vad_timeout_spin.setSuffix(" s")
+        self.vad_timeout_spin.setValue(float(self.config.get("vad_silence_timeout", 2.0)))
+        self.vad_timeout_spin.setToolTip("Seconds of silence that mark the end of a phrase.")
+        form.addRow("End-of-Phrase Silence:", self.vad_timeout_spin)
+
         layout.addLayout(form)
 
         refresh_btn = QPushButton("Refresh Devices", self)
         refresh_btn.clicked.connect(self.refresh_audio_devices)
         layout.addWidget(refresh_btn)
+
+        vad_note = QLabel("Speech threshold and silence timeout only affect Always-On (VAD) mode.", self)
+        vad_note.setStyleSheet("color: #71717a; font-size: 11px;")
+        vad_note.setWordWrap(True)
+        layout.addWidget(vad_note)
 
         layout.addStretch()
         self.tabs.addTab(tab, "Audio Device")
@@ -323,10 +384,10 @@ class SettingsDialog(QDialog):
         sel_idx = 0
         for i, dev in enumerate(devices):
             label = f"{dev['name']} ({dev['channels']} ch)"
-            if dev['is_default']:
+            if dev["is_default"]:
                 label += " [Default]"
-            self.audio_combo.addItem(label, dev['index'])
-            if curr_dev is not None and dev['index'] == curr_dev:
+            self.audio_combo.addItem(label, dev["index"])
+            if curr_dev is not None and dev["index"] == curr_dev:
                 sel_idx = i + 1
 
         self.audio_combo.setCurrentIndex(sel_idx)
@@ -336,7 +397,9 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(tab)
         layout.setSpacing(10)
 
-        desc = QLabel("Speak these commands while dictating to trigger formatting, navigation, or app controls:", self)
+        desc = QLabel(
+            "Speak these commands while dictating to trigger formatting, navigation, or app controls:", self
+        )
         desc.setStyleSheet("color: #a1a1aa; font-size: 12px;")
         layout.addWidget(desc)
 
@@ -357,10 +420,10 @@ class SettingsDialog(QDialog):
             ("vocara clear", "Clears the recent sentence buffer"),
             ("vocara pause", "Temporarily pauses voice dictation"),
             ("vocara resume", "Resumes active dictation"),
-            ("open quote / close quote", "Types quotation marks (\")"),
+            ("open quote / close quote", 'Types quotation marks (")'),
             ("quote <text> unquote", "Wraps the spoken phrase in quotes"),
             ("open / close bracket", "Types parentheses ( / )"),
-            ("cancel that", "Erases the utterance before typing")
+            ("cancel that", "Erases the utterance before typing"),
         ]
 
         table.setRowCount(len(commands))
@@ -376,6 +439,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(tab, "Voice Commands")
 
     def on_bind_clicked(self):
+        self._stop_rebind_listener()
         self.bind_btn.setText("Press combination now...")
         self.bind_hint.setText("Listening for key or mouse button...")
         self.bind_hint.setStyleSheet("color: #f59e0b; font-size: 11px;")
@@ -388,6 +452,7 @@ class SettingsDialog(QDialog):
         self.shortcut_captured_signal.emit(shortcut)
 
     def _apply_shortcut(self, shortcut):
+        self.rebind_listener = None  # listener stops itself once captured
         self.config["shortcut"] = shortcut
         self.bind_btn.setText(get_friendly_name(shortcut))
         self.bind_btn.setEnabled(True)
@@ -401,7 +466,7 @@ class SettingsDialog(QDialog):
         self.config["play_beeps"] = self.chk_beeps.isChecked()
         self.config["start_on_boot"] = self.chk_boot.isChecked()
         self.config["start_invisible"] = self.chk_invis.isChecked()
-        
+
         self.config["engine"] = self.engine_combo.currentData()
         self.config["model_size"] = self.model_combo.currentData()
         self.config["compute_type"] = self.compute_combo.currentData()
@@ -409,13 +474,24 @@ class SettingsDialog(QDialog):
         self.config["vad_filter"] = self.chk_vad_filter.isChecked()
 
         self.config["input_device"] = self.audio_combo.currentData()
+        self.config["vad_energy_threshold"] = self.vad_threshold_spin.value()
+        self.config["vad_silence_timeout"] = self.vad_timeout_spin.value()
 
         save_config(self.config)
         if self.on_config_changed_cb:
             self.on_config_changed_cb(self.config)
         self.accept()
 
-    def closeEvent(self, event):
+    def done(self, result):
+        """Runs for every close path (Save, Cancel, Esc, window close), unlike
+        closeEvent which reject() bypasses — so the rebind listener cannot leak."""
+        self._stop_rebind_listener()
+        super().done(result)
+
+    def _stop_rebind_listener(self):
         if self.rebind_listener:
-            self.rebind_listener.stop()
-        super().closeEvent(event)
+            try:
+                self.rebind_listener.stop()
+            except Exception as e:
+                logger.debug(f"Error stopping rebind listener: {e}")
+            self.rebind_listener = None
