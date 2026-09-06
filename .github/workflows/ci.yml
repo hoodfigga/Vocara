@@ -28,7 +28,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt update
-          sudo apt install -y libxcb-cursor0 libportaudio2
+          sudo apt install -y libxcb-cursor0 libportaudio2 xvfb
 
       - name: Install Python Dependencies
         run: |
@@ -36,9 +36,11 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      # pynput needs an X server even to import on Linux (global hotkeys);
+      # xvfb provides a virtual display for the test run.
       - name: Run Tests (Linux)
         if: runner.os == 'Linux'
-        run: python -m pytest tests/ -q
+        run: xvfb-run -a python -m pytest tests/ -q
 
       - name: Run Tests (Windows)
         if: runner.os == 'Windows'
