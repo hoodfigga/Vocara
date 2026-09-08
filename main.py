@@ -3,7 +3,6 @@ import os
 import platform
 import shutil
 import sys
-import time
 
 import numpy as np
 
@@ -39,6 +38,7 @@ from settings_dialog import SettingsDialog
 from shortcut_manager import ShortcutManager, get_friendly_name
 from transcriber import WhisperTranscriber
 from type_simulator import TypeSimulator
+from typing_worker import TypingWorker
 from version import __version__
 
 # xprop is only needed for fullscreen detection on X11; probe once at startup
@@ -220,6 +220,9 @@ class VocaraHUD(QWidget):
     """
 
     audio_level_signal = Signal(float)
+    # Emitted from the typing worker thread; Qt queues delivery to the GUI
+    # thread, so the slot can safely touch widgets.
+    nlp_command_signal = Signal(str)
 
     # Max number of pending always-on phrases before the oldest is dropped
     MAX_VAD_QUEUE = 5
@@ -247,9 +250,14 @@ class VocaraHUD(QWidget):
         self._model_load_token = 0
 
         self.audio_level_signal.connect(self._on_audio_level)
+        self.nlp_command_signal.connect(self._show_nlp_command)
 
         self.simulator = TypeSimulator()
         self.nlp_engine = NLPProcessor(self.simulator, command_callback=self.on_nlp_command)
+        # Keystroke injection runs on its own daemon thread: pynput type()
+        # blocks for tens of ms per phrase, which froze the HUD/VU meter when
+        # it ran on the GUI thread.
+        self.typing_worker = TypingWorker(self.nlp_engine, lambda: self.config.get("auto_enter", False))
         self.recorder = AudioRecorder(
             device_index=self.config.get("input_device"),
             level_callback=lambda lvl: self.audio_level_signal.emit(lvl),
@@ -642,6 +650,12 @@ class VocaraHUD(QWidget):
         self.vu_bar.set_level(level)
 
     def on_nlp_command(self, command_name: str):
+        """Runs on the typing worker thread; forwards the badge request to the
+        GUI thread via a queued signal — never touches widgets directly."""
+        self.nlp_command_signal.emit(command_name)
+
+    @Slot(str)
+    def _show_nlp_command(self, command_name: str):
         """Displays temporary badge when a voice macro executes."""
         self.status_text.setText(f"⚡ {command_name}")
         self.status_dot.setStyleSheet("color: #818cf8;")
@@ -738,18 +752,8 @@ class VocaraHUD(QWidget):
             self.last_transcript = text
             self.transcript_label.setText(text)
             self.transcript_label.setStyleSheet("color: #f4f4f5; font-size: 11px;")
-
-            def type_and_enter():
-                self.nlp_engine.process(text)
-                if self.config.get("auto_enter", False) and not self.nlp_engine.is_paused:
-                    time.sleep(0.04)
-                    from pynput.keyboard import Key
-
-                    self.simulator.keyboard.press(Key.enter)
-                    self.simulator.keyboard.release(Key.enter)
-                    self.nlp_engine.is_first_word = True
-
-            QTimer.singleShot(80, type_and_enter)
+            # Typed off the GUI thread so long phrases cannot freeze the HUD.
+            self.typing_worker.submit(text)
         else:
             self.transcript_label.setText("(No speech detected)")
             self.transcript_label.setStyleSheet("color: #71717a; font-size: 11px;")
@@ -803,8 +807,11 @@ class VocaraHUD(QWidget):
 
     @Slot(np.ndarray)
     def on_vad_phrase(self, audio_array):
-        if not self.transcriber or self.nlp_engine.is_paused or self.is_manually_paused:
+        if not self.transcriber or self.is_manually_paused:
             return
+        # NOTE: NLP-paused phrases are NOT dropped here. The resume command
+        # ('vocara resume') is itself spoken, so it must reach the NLP layer;
+        # NLPProcessor.process() ignores non-command text while paused.
         # Bound the backlog: if transcription cannot keep up, drop the oldest
         # phrases rather than growing the queue without limit.
         if len(self.vad_queue) >= self.MAX_VAD_QUEUE:
@@ -870,6 +877,8 @@ class VocaraHUD(QWidget):
         old_model = self.config.get("model_size")
         old_compute = self.config.get("compute_type")
         old_device = self.config.get("device")
+        old_language = self.config.get("language")
+        old_vad_filter = self.config.get("vad_filter")
         old_input = self.config.get("input_device")
         old_vad_energy = self.config.get("vad_energy_threshold")
         old_vad_timeout = self.config.get("vad_silence_timeout")
@@ -883,12 +892,16 @@ class VocaraHUD(QWidget):
         self._update_shortcut_badge()
         update_autostart(self.config.get("start_on_boot", False))
 
-        # Check if engine parameters changed and reload model if necessary
+        # Check if engine parameters changed and reload model if necessary.
+        # language and vad_filter are transcribe-time parameters; a model
+        # reload is the only path that makes them take effect.
         model_changed = (
             old_engine != self.config.get("engine")
             or old_model != self.config.get("model_size")
             or old_compute != self.config.get("compute_type")
             or old_device != self.config.get("device")
+            or old_language != self.config.get("language")
+            or old_vad_filter != self.config.get("vad_filter")
         )
 
         if model_changed:
@@ -993,6 +1006,10 @@ class VocaraHUD(QWidget):
                     obj.stop()
                 except Exception as e:
                     logger.debug(f"Error stopping {attr}: {e}")
+        try:
+            self.typing_worker.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping typing worker: {e}")
         if self.vad_thread and self.vad_thread.isRunning():
             self.vad_thread.stop()
 

@@ -55,22 +55,23 @@ VOCARA_SKIP_TORCH=1 ./install.sh
 ```cmd
 git clone https://github.com/hoodfigga/Vocara.git
 cd Vocara
-install.bat
+python -m venv venv
+venv\Scripts\pip install -r requirements.txt
 ```
-*Or manually install dependencies: `pip install -r requirements.txt`*
 
 Launch Vocara:
 ```cmd
 venv\Scripts\python main.py
 ```
+Optional PyTorch + openai-whisper fallback engine: `venv\Scripts\pip install torch openai-whisper` (see [pytorch.org](https://pytorch.org) for GPU-specific wheels).
 
 ## Building Standalone Binaries
 
 Prebuilt binaries are attached to each [GitHub Release](https://github.com/hoodfigga/Vocara/releases) (built by CI on every version tag).
 
 To build locally:
-- **Windows**: `build_windows.bat`
-- **Linux**: `pyinstaller --noconfirm --onedir --windowed --name Vocara --icon=assets/icon.png --add-data "assets:assets" main.py`
+- **Linux**: `./build_linux.sh` (or `pyinstaller --noconfirm Vocara.spec`)
+- **Windows**: `pyinstaller --noconfirm Vocara.spec`
 
 ## Privacy & Security
 

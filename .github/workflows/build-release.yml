@@ -34,7 +34,7 @@ jobs:
 
       - name: Build Standalone Executable
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name Vocara --icon=assets/icon.png --add-data "assets:assets" main.py
+          pyinstaller --noconfirm Vocara.spec
           cd dist && tar -czf ../Vocara-Linux-x86_64-py${{ matrix.python-version }}.tar.gz Vocara
 
       - name: Upload Artifact
@@ -65,7 +65,7 @@ jobs:
 
       - name: Build Standalone Executable
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name Vocara --icon=assets/icon.ico --add-data "assets;assets" main.py
+          pyinstaller --noconfirm Vocara.spec
           Compress-Archive -Path dist\Vocara\* -DestinationPath Vocara-Windows-x64-py${{ matrix.python-version }}.zip
 
       - name: Upload Artifact
